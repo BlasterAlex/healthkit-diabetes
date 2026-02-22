@@ -41,6 +41,14 @@ st.markdown(
 )
 
 
+def _to_sorted_df(records: list[dict]) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame()
+    df = pd.DataFrame(records).sort_values("date")
+    df["date"] = df["date"].dt.tz_localize(None)
+    return df
+
+
 @st.cache_data
 def load_data(file_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if not os.path.exists(file_path):
@@ -99,18 +107,7 @@ def load_data(file_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
     if skipped:
         st.warning(f"Пропущено некорректных записей: {skipped}")
 
-    glucose_df = pd.DataFrame(glucose).sort_values("date") if glucose else pd.DataFrame()
-    carbs_df = pd.DataFrame(carbs).sort_values("date") if carbs else pd.DataFrame()
-    insulin_df = pd.DataFrame(insulin).sort_values("date") if insulin else pd.DataFrame()
-
-    if not glucose_df.empty:
-        glucose_df["date"] = glucose_df["date"].dt.tz_localize(None)
-    if not carbs_df.empty:
-        carbs_df["date"] = carbs_df["date"].dt.tz_localize(None)
-    if not insulin_df.empty:
-        insulin_df["date"] = insulin_df["date"].dt.tz_localize(None)
-
-    return glucose_df, carbs_df, insulin_df
+    return _to_sorted_df(glucose), _to_sorted_df(carbs), _to_sorted_df(insulin)
 
 
 # === ИНТЕРФЕЙС ===
