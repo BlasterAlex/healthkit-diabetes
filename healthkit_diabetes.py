@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import xml.etree.ElementTree as ET
 from datetime import timedelta
@@ -39,64 +41,73 @@ st.markdown(
 )
 
 
+def _to_sorted_df(records: list[dict]) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame()
+    df = pd.DataFrame(records).sort_values("date")
+    df["date"] = df["date"].dt.tz_localize(None)
+    return df
+
+
 @st.cache_data
-def load_data(file_path):
+def load_data(file_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if not os.path.exists(file_path):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    context = ET.iterparse(file_path, events=("end",))
-    glucose, carbs, insulin = [], [], []
+    glucose: list[dict] = []
+    carbs: list[dict] = []
+    insulin: list[dict] = []
+    skipped = 0
 
-    for _, elem in context:
-        if elem.tag == "Record":
-            record_type = elem.get("type")
+    try:
+        context = ET.iterparse(file_path, events=("end",))
+        for _, elem in context:
+            if elem.tag == "Record":
+                record_type = elem.get("type")
 
-            if record_type in [
-                "HKQuantityTypeIdentifierBloodGlucose",
-                "HKQuantityTypeIdentifierDietaryCarbohydrates",
-                "HKQuantityTypeIdentifierInsulinDelivery",
-            ]:
+                if record_type in [
+                    "HKQuantityTypeIdentifierBloodGlucose",
+                    "HKQuantityTypeIdentifierDietaryCarbohydrates",
+                    "HKQuantityTypeIdentifierInsulinDelivery",
+                ]:
+                    try:
+                        date_val = pd.to_datetime(elem.get("startDate"))
+                        val = float(elem.get("value"))  # type: ignore[arg-type]
+                    except (ValueError, TypeError):
+                        skipped += 1
+                        elem.clear()
+                        continue
 
-                date_val = pd.to_datetime(elem.get("startDate"))
-                val = float(elem.get("value"))
+                    if record_type == "HKQuantityTypeIdentifierBloodGlucose":
+                        glucose.append({"date": date_val, "value": val})
 
-                if record_type == "HKQuantityTypeIdentifierBloodGlucose":
-                    glucose.append({"date": date_val, "value": val})
+                    elif record_type == "HKQuantityTypeIdentifierDietaryCarbohydrates":
+                        carbs.append({"date": date_val, "value": val})
 
-                elif record_type == "HKQuantityTypeIdentifierDietaryCarbohydrates":
-                    carbs.append({"date": date_val, "value": val})
+                    elif record_type == "HKQuantityTypeIdentifierInsulinDelivery":
+                        reason = "Болюс"  # Значение по умолчанию
 
-                elif record_type == "HKQuantityTypeIdentifierInsulinDelivery":
-                    reason = "Болюс"  # Значение по умолчанию
+                        # ГЛУБОКИЙ ПОИСК: перебираем все вложенные теги внутри Record
+                        for meta in elem.iter():
+                            # Проверяем, содержит ли тег в названии MetadataEntry
+                            if "MetadataEntry" in meta.tag:
+                                if meta.get("key") == "HKInsulinDeliveryReason":
+                                    if meta.get("value") == "1":
+                                        reason = "Базал"
 
-                    # ГЛУБОКИЙ ПОИСК: перебираем все вложенные теги внутри Record
-                    for meta in elem.iter():
-                        # Проверяем, содержит ли тег в названии MetadataEntry
-                        if "MetadataEntry" in meta.tag:
-                            if meta.get("key") == "HKInsulinDeliveryReason":
-                                if meta.get("value") == "1":
-                                    reason = "Базал"
+                        insulin.append({"date": date_val, "value": val, "reason": reason})
 
-                    insulin.append(
-                        {"date": date_val, "value": val, "reason": reason})
+                # Очищаем память, чтобы скрипт не съел всю ОЗУ
+                elem.clear()
 
-            # Очищаем память, чтобы скрипт не съел всю ОЗУ
-            elem.clear()
+    except ET.ParseError as e:
+        st.error(f"Ошибка разбора XML: {e}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    glucose_df = pd.DataFrame(glucose).sort_values(
-        "date") if glucose else pd.DataFrame()
-    carbs_df = pd.DataFrame(carbs).sort_values("date") if carbs else pd.DataFrame()
-    insulin_df = pd.DataFrame(insulin).sort_values(
-        "date") if insulin else pd.DataFrame()
+    if skipped:
+        st.warning(f"Пропущено некорректных записей: {skipped}")
 
-    if not glucose_df.empty:
-        glucose_df["date"] = glucose_df["date"].dt.tz_localize(None)
-    if not carbs_df.empty:
-        carbs_df["date"] = carbs_df["date"].dt.tz_localize(None)
-    if not insulin_df.empty:
-        insulin_df["date"] = insulin_df["date"].dt.tz_localize(None)
-
-    return glucose_df, carbs_df, insulin_df
+    return _to_sorted_df(glucose), _to_sorted_df(carbs), _to_sorted_df(insulin)
 
 
 # === ИНТЕРФЕЙС ===
