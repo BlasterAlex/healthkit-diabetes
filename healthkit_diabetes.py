@@ -257,12 +257,12 @@ for midnight in midnights:
         line_color="rgba(128, 128, 128, 0.5)",
     )
 
-start_str = st.session_state.start_date.strftime("%d.%m.%Y")
-end_str = st.session_state.end_date.strftime("%d.%m.%Y")
-date_range_str = f"{start_str} — {end_str}"
+START_STR = st.session_state.start_date.strftime("%d.%m.%Y")
+END_STR = st.session_state.end_date.strftime("%d.%m.%Y")
+DATE_RANGE_STR = f"{START_STR} — {END_STR}"
 
 fig.update_layout(
-    title=dict(text=f"Данные за период: {date_range_str}", font=dict(size=18)),
+    title=dict(text=f"Данные за период: {DATE_RANGE_STR}", font=dict(size=18)),
     hovermode="x unified",
     barmode="overlay",
     template="plotly_white",
