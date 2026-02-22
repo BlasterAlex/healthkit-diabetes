@@ -1,0 +1,11 @@
+[MESSAGES CONTROL]
+disable =
+    missing-module-docstring,
+    missing-function-docstring,
+    use-dict-literal,
+    too-many-nested-blocks,
+    too-many-branches,
+    line-too-long
+
+[FORMAT]
+max-line-length=100

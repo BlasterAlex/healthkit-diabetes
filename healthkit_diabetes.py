@@ -1,9 +1,10 @@
-import streamlit as st
+import os
 import xml.etree.ElementTree as ET
+from datetime import timedelta
+
 import pandas as pd
 import plotly.graph_objects as go
-import os
-from datetime import timedelta
+import streamlit as st
 
 
 FILE_PATH = "export.xml"
@@ -46,7 +47,7 @@ def load_data(file_path):
     context = ET.iterparse(file_path, events=("end",))
     glucose, carbs, insulin = [], [], []
 
-    for event, elem in context:
+    for _, elem in context:
         if elem.tag == "Record":
             record_type = elem.get("type")
 
@@ -76,23 +77,26 @@ def load_data(file_path):
                                 if meta.get("value") == "1":
                                     reason = "Базал"
 
-                    insulin.append({"date": date_val, "value": val, "reason": reason})
+                    insulin.append(
+                        {"date": date_val, "value": val, "reason": reason})
 
             # Очищаем память, чтобы скрипт не съел всю ОЗУ
             elem.clear()
 
-    df_g = pd.DataFrame(glucose).sort_values("date") if glucose else pd.DataFrame()
-    df_c = pd.DataFrame(carbs).sort_values("date") if carbs else pd.DataFrame()
-    df_i = pd.DataFrame(insulin).sort_values("date") if insulin else pd.DataFrame()
+    glucose_df = pd.DataFrame(glucose).sort_values(
+        "date") if glucose else pd.DataFrame()
+    carbs_df = pd.DataFrame(carbs).sort_values("date") if carbs else pd.DataFrame()
+    insulin_df = pd.DataFrame(insulin).sort_values(
+        "date") if insulin else pd.DataFrame()
 
-    if not df_g.empty:
-        df_g["date"] = df_g["date"].dt.tz_localize(None)
-    if not df_c.empty:
-        df_c["date"] = df_c["date"].dt.tz_localize(None)
-    if not df_i.empty:
-        df_i["date"] = df_i["date"].dt.tz_localize(None)
+    if not glucose_df.empty:
+        glucose_df["date"] = glucose_df["date"].dt.tz_localize(None)
+    if not carbs_df.empty:
+        carbs_df["date"] = carbs_df["date"].dt.tz_localize(None)
+    if not insulin_df.empty:
+        insulin_df["date"] = insulin_df["date"].dt.tz_localize(None)
 
-    return df_g, df_c, df_i
+    return glucose_df, carbs_df, insulin_df
 
 
 # === ИНТЕРФЕЙС ===
@@ -104,7 +108,8 @@ if df_g.empty and df_c.empty and df_i.empty:
     st.error(f"Файл {FILE_PATH} не найден или пуст.")
     st.stop()
 
-all_dates = pd.concat([df["date"] for df in [df_g, df_c, df_i] if not df.empty])
+all_dates = pd.concat([df["date"]
+                      for df in [df_g, df_c, df_i] if not df.empty])
 min_date_val = all_dates.min().date()
 max_date_val = all_dates.max().date()
 
@@ -242,7 +247,8 @@ if not f_c.empty:
         )
     )
 
-midnights = pd.date_range(start=start_dt.floor("D"), end=end_dt.ceil("D"), freq="D")
+midnights = pd.date_range(start=start_dt.floor("D"),
+                          end=end_dt.ceil("D"), freq="D")
 for midnight in midnights:
     fig.add_vline(
         x=midnight,
@@ -251,14 +257,17 @@ for midnight in midnights:
         line_color="rgba(128, 128, 128, 0.5)",
     )
 
-date_range_str = f"{st.session_state.start_date.strftime('%d.%m.%Y')} — {st.session_state.end_date.strftime('%d.%m.%Y')}"
+start_str = st.session_state.start_date.strftime("%d.%m.%Y")
+end_str = st.session_state.end_date.strftime("%d.%m.%Y")
+date_range_str = f"{start_str} — {end_str}"
 
 fig.update_layout(
     title=dict(text=f"Данные за период: {date_range_str}", font=dict(size=18)),
     hovermode="x unified",
     barmode="overlay",
     template="plotly_white",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    legend=dict(orientation="h", yanchor="bottom",
+                y=1.02, xanchor="right", x=1),
     height=650,
     margin=dict(l=20, r=20, t=60, b=20),
     xaxis=dict(domain=[0, 0.95], range=[start_dt, end_dt], type="date"),

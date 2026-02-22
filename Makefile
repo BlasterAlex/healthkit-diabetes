@@ -1,15 +1,16 @@
 VENV = env
-STREAMLIT = $(VENV)\Scripts\streamlit.exe
-PIP = $(VENV)\Scripts\pip.exe
 
-.PHONY: install run clean
+.PHONY: install run lint clean
 
 install:
 	python -m venv $(VENV)
-	$(PIP) install -r requirements.txt
+	$(VENV)\Scripts\pip.exe install -r requirements.txt
 
 run:
-	$(STREAMLIT) run healthkit_diabetes.py
+	$(VENV)\Scripts\streamlit.exe run healthkit_diabetes.py
+
+lint:
+	$(VENV)\Scripts\pylint.exe healthkit_diabetes.py
 
 clean:
 	rmdir /s /q $(VENV)
