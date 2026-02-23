@@ -14,6 +14,22 @@ FILE_PATH = "export.xml"
 GLUCOSE_MIN = 4  # ммоль/л — нижняя граница целевого диапазона
 GLUCOSE_MAX = 10  # ммоль/л — верхняя граница целевого диапазона
 
+# Единый источник цветов для графика и блока статистики
+_ZONE_COLOR = {
+    "in_range": "#32CD32",  # зелёный  — в диапазоне
+    "above":    "#FF4444",  # красный  — выше диапазона
+    "below":    "#FFA500",  # оранжевый — ниже диапазона
+}
+
+
+def _glucose_zone(v: float) -> str:
+    """Определяет зону глюкозы: 'below', 'in_range' или 'above'."""
+    if v < GLUCOSE_MIN:
+        return "below"
+    if v > GLUCOSE_MAX:
+        return "above"
+    return "in_range"
+
 st.set_page_config(layout="wide", page_title="Дневник Диабета")
 
 st.markdown(
@@ -59,23 +75,20 @@ def _crossing_point(
 
 
 def _glucose_traces(df: pd.DataFrame) -> list[go.Scatter]:
-    """Разбивает линию глюкозы на синие (норма) и красные (вне диапазона) сегменты."""
+    """Разбивает линию глюкозы на сегменты по зонам: ниже/норма/выше диапазона."""
     if df.empty:
         return []
 
     dates = df["date"].tolist()
     values = df["value"].tolist()
 
-    def in_range(v: float) -> bool:
-        return GLUCOSE_MIN <= v <= GLUCOSE_MAX
-
     segments: list[tuple] = []
     seg_x = [dates[0]]
     seg_y = [values[0]]
-    seg_ok = in_range(values[0])
+    seg_ok = _glucose_zone(values[0])
 
     for pt in range(1, len(values)):
-        if in_range(values[pt]) == seg_ok:
+        if _glucose_zone(values[pt]) == seg_ok:
             seg_x.append(dates[pt])
             seg_y.append(values[pt])
         else:
@@ -88,7 +101,7 @@ def _glucose_traces(df: pd.DataFrame) -> list[go.Scatter]:
 
             seg_x = [t_cross, dates[pt]]
             seg_y = [boundary, values[pt]]
-            seg_ok = in_range(values[pt])
+            seg_ok = _glucose_zone(values[pt])
 
     segments.append((seg_x, seg_y, seg_ok))
 
@@ -99,7 +112,7 @@ def _glucose_traces(df: pd.DataFrame) -> list[go.Scatter]:
             y=seg_y,
             name="Глюкоза (ммоль/л)",
             mode="lines",
-            line=dict(color="blue" if ok else "red", width=2, shape="spline"),
+            line=dict(color=_ZONE_COLOR[ok], width=2, shape="spline"),
             yaxis="y1",
             legendgroup="glucose",
             showlegend=idx == 0,
@@ -107,7 +120,7 @@ def _glucose_traces(df: pd.DataFrame) -> list[go.Scatter]:
         ))
 
     # отдельный невидимый трейс для hover — только реальные точки, без дублей
-    hover_colors = ["blue" if in_range(v) else "red" for v in values]
+    hover_colors = [_ZONE_COLOR[_glucose_zone(v)] for v in values]
     result.append(go.Scatter(
         x=dates,
         y=values,
@@ -135,9 +148,101 @@ def _xaxis_ticks() -> dict:
     else:
         dtick = 7 * 24 * 3600_000   # каждые 7 дней
 
-    tickformat = "%H:%M\n%d.%m" if _days <= 14 else "%d.%m"
+    if _days <= 14:
+        # время на тиках, дата — отдельными жирными аннотациями под осью
+        return {"dtick": dtick, "tickformat": "%H:%M"}
 
-    return {"dtick": dtick, "tickformat": tickformat}
+    # крупный диапазон — только даты, жирным
+    return {"dtick": dtick, "tickformat": "%d.%m", "tickfont": dict(weight="bold")}
+
+
+def _glucose_stats(df: pd.DataFrame) -> dict | None:
+    """Вычисляет TIR/TAR/TBR и базовые показатели глюкозы. Возвращает None если данных нет."""
+    if df.empty:
+        return None
+    vals = df["value"]
+    n = len(vals)
+    tir = round(vals.between(GLUCOSE_MIN, GLUCOSE_MAX).sum() / n * 100)
+    tar = round((vals > GLUCOSE_MAX).sum() / n * 100)
+    return {
+        "tir": tir, "tar": tar, "tbr": 100 - tir - tar,
+        "mean": vals.mean(), "min": vals.min(), "max": vals.max(),
+    }
+
+
+def _stats_section(
+    glc: pd.DataFrame,
+    ins: pd.DataFrame,
+    crb: pd.DataFrame,
+    n_days: int,
+) -> None:
+    """Рендерит блок сводной статистики за выбранный период.
+
+    n_days — количество календарных суток в выбранном диапазоне (>= 1),
+    используется для расчёта среднесуточных значений инсулина и углеводов.
+    """
+    g = _glucose_stats(glc)
+    bolus = ins[ins["reason"] == "Болюс"]["value"].sum() if not ins.empty else 0.0
+    basal = ins[ins["reason"] == "Базал"]["value"].sum() if not ins.empty else 0.0
+    carbs = int(crb["value"].sum()) if not crb.empty else 0
+
+    st.markdown("---")
+
+    # Цветная полоска: зелёный — в диапазоне, красный — выше, оранжевый — ниже
+    if g:
+        st.markdown(
+            f"""
+<div style="display:flex;height:20px;border-radius:6px;overflow:hidden;
+            gap:2px;margin-bottom:6px">
+  <div style="width:{g['tir']}%;background:{_ZONE_COLOR['in_range']}" title="В диапазоне: {g['tir']}%"></div>
+  <div style="width:{g['tar']}%;background:{_ZONE_COLOR['above']}" title="Выше диапазона: {g['tar']}%"></div>
+  <div style="width:{g['tbr']}%;background:{_ZONE_COLOR['below']}" title="Ниже диапазона: {g['tbr']}%"></div>
+</div>""",
+            unsafe_allow_html=True,
+        )
+
+    col_tir, col_gl, col_i, col_c = st.columns(4)
+
+    with col_tir:
+        st.markdown("**⏱️ Время в диапазоне**")
+        if g:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("🟢 В диап.", f"{g['tir']}%")
+            c2.metric("🔴 Выше", f"{g['tar']}%")
+            c3.metric("🟠 Ниже", f"{g['tbr']}%")
+
+    with col_gl:
+        st.markdown("**🩸 Глюкоза, ммоль/л**")
+        if g:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Среднее", f"{g['mean']:.1f}")
+            c2.metric("Мин", f"{g['min']:.1f}")
+            c3.metric("Макс", f"{g['max']:.1f}")
+
+    with col_i:
+        st.markdown("**💉 Инсулин**")
+        c1, c2 = st.columns(2)
+        c1.metric(
+            "Болюс, ЕД/сут",
+            round(bolus / n_days),
+            delta=f"всего {round(bolus)}",
+            delta_color="off",
+        )
+        c2.metric(
+            "Базал, ЕД/сут",
+            round(basal / n_days),
+            delta=f"всего {round(basal)}",
+            delta_color="off",
+        )
+
+    with col_c:
+        st.markdown("**🍞 Углеводы**")
+        st.metric(
+            "г / сутки",
+            int(round(carbs / n_days)),
+            delta=f"всего {carbs} г",
+            delta_color="off",
+        )
 
 
 def _to_sorted_df(records: list[dict]) -> pd.DataFrame:
@@ -303,12 +408,21 @@ if not f_g.empty:
         y0=GLUCOSE_MIN,
         y1=GLUCOSE_MAX,
         line_width=0,
-        fillcolor="#32CD32",
-        opacity=0.08,
+        fillcolor=_ZONE_COLOR["in_range"],
+        opacity=0.06,
         annotation_text="Целевой диапазон",
         annotation_position="top left",
-        annotation_font_color="#32CD32",
+        annotation_font_color=_ZONE_COLOR["in_range"],
     )
+
+    for thresh in (GLUCOSE_MIN, GLUCOSE_MAX):
+        fig.add_hline(
+            y=thresh,
+            line_dash="dash",
+            line_color=_ZONE_COLOR["in_range"],
+            line_width=1,
+            opacity=0.5,
+        )
 
 # 2. Инсулин
 if not f_i.empty:
@@ -391,6 +505,23 @@ DATE_RANGE_STR = f"{START_STR} — {END_STR}"
 
 _days = (st.session_state.end_date - st.session_state.start_date).days
 
+# Жирные подписи дат под осью — только для коротких диапазонов,
+# где тики показывают лишь время (%H:%M)
+if _days <= 14:
+    for day_start in days[:-1]:
+        fig.add_annotation(
+            x=day_start + pd.Timedelta(hours=12),
+            xref="x",
+            y=0,
+            yref="paper",
+            yshift=-28,   # пикселей вниз от нижней границы графика
+            text=f"<b>{day_start.strftime('%d.%m')}</b>",
+            showarrow=False,
+            font=dict(size=11),
+            xanchor="center",
+            yanchor="top",
+        )
+
 fig.update_layout(
     title=dict(text=f"Данные за период: {DATE_RANGE_STR}", font=dict(size=18)),
     hovermode="x unified",
@@ -398,8 +529,8 @@ fig.update_layout(
     template="plotly_white",
     legend=dict(orientation="h", yanchor="bottom",
                 y=1.02, xanchor="right", x=1),
-    height=800,
-    margin=dict(l=20, r=20, t=60, b=20),
+    height=750,
+    margin=dict(l=20, r=20, t=60, b=45 if _days <= 14 else 20),
     xaxis=dict(
         domain=[0, 0.95],
         range=[start_dt, end_dt],
@@ -443,3 +574,5 @@ config = {
 }
 
 st.plotly_chart(fig, width="stretch", config=config)
+
+_stats_section(f_g, f_i, f_c, max(1, _days + 1))
