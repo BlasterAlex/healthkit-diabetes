@@ -4,3 +4,4 @@ __pycache__/
 *.xml
 *.pyc
 .DS_Store
+.streamlit/cache/
