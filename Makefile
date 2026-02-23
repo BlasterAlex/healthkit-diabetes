@@ -1,16 +1,26 @@
 VENV = env
 
+ifeq ($(OS),Windows_NT)
+    BIN    = $(VENV)/Scripts
+    EXE    = .exe
+    RMVENV = rmdir /s /q $(VENV)
+else
+    BIN    = $(VENV)/bin
+    EXE    =
+    RMVENV = rm -rf $(VENV)
+endif
+
 .PHONY: install run lint clean
 
 install:
 	python -m venv $(VENV)
-	$(VENV)\Scripts\pip.exe install -r requirements.txt
+	$(BIN)/pip$(EXE) install -r requirements.txt
 
 run:
-	$(VENV)\Scripts\streamlit.exe run healthkit_diabetes.py
+	$(BIN)/streamlit$(EXE) run healthkit_diabetes.py
 
 lint:
-	$(VENV)\Scripts\pylint.exe healthkit_diabetes.py
+	$(BIN)/pylint$(EXE) healthkit_diabetes.py
 
 clean:
-	rmdir /s /q $(VENV)
+	$(RMVENV)
