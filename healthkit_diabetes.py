@@ -10,23 +10,27 @@ import streamlit as st
 
 
 FILE_PATH = "export.xml"
-GLUCOSE_COLOR = "blue"
+
+GLUCOSE_MIN = 4  # ммоль/л — нижняя граница целевого диапазона
+GLUCOSE_MAX = 10  # ммоль/л — верхняя граница целевого диапазона
 
 st.set_page_config(layout="wide", page_title="Дневник Диабета")
 
 st.markdown(
     """
 <style>
-    footer {visibility: hidden;}
-    
-    div[data-testid="stDateInput"] > div,
-    div[data-testid="stDateInput"] input {
-        cursor: pointer !important;
-    }
+    .block-container { padding: 1rem 5rem 0; }
 
-    div[data-testid="stDateInput"] label {
-        margin-bottom: 16px;
-    }
+    [data-testid="stAppDeployButton"] { display: none; }
+    [data-testid="stMainMenuList"] > ul:nth-child(4),
+    [data-testid="stMainMenuList"] > ul:nth-child(5),
+    [data-testid="stMainMenuDivider"] { display: none; }
+    
+    div[data-testid="stDateInput"] label { margin-bottom: 16px; }
+    div[data-testid="stDateInput"] p { font-size: 16px; }
+
+    div[data-testid="stDateInput"] > div,
+    div[data-testid="stDateInput"] input { cursor: pointer !important; }
     
     div[data-testid="stDateInput"] input {
         background-image: url("data:image/svg+xml,%3Csvg width='24' height='24' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M6 9L12 15L18 9' stroke='%23808495' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
@@ -41,6 +45,101 @@ st.markdown(
 )
 
 
+def _fmt_units(v: float) -> str:
+    return str(int(v)) if v == int(v) else f"{v:.1f}"
+
+
+def _crossing_point(
+    t0: pd.Timestamp, t1: pd.Timestamp, v0: float, v1: float
+) -> tuple[pd.Timestamp, float]:
+    """Вычисляет момент и значение пересечения с границей целевого диапазона."""
+    boundary = GLUCOSE_MIN if (v0 < GLUCOSE_MIN) != (v1 < GLUCOSE_MIN) else GLUCOSE_MAX
+    ratio = (boundary - v0) / (v1 - v0) if v1 != v0 else 0.5
+    return t0 + (t1 - t0) * ratio, boundary
+
+
+def _glucose_traces(df: pd.DataFrame) -> list[go.Scatter]:
+    """Разбивает линию глюкозы на синие (норма) и красные (вне диапазона) сегменты."""
+    if df.empty:
+        return []
+
+    dates = df["date"].tolist()
+    values = df["value"].tolist()
+
+    def in_range(v: float) -> bool:
+        return GLUCOSE_MIN <= v <= GLUCOSE_MAX
+
+    segments: list[tuple] = []
+    seg_x = [dates[0]]
+    seg_y = [values[0]]
+    seg_ok = in_range(values[0])
+
+    for pt in range(1, len(values)):
+        if in_range(values[pt]) == seg_ok:
+            seg_x.append(dates[pt])
+            seg_y.append(values[pt])
+        else:
+            t_cross, boundary = _crossing_point(
+                dates[pt - 1], dates[pt], values[pt - 1], values[pt]
+            )
+            seg_x.append(t_cross)
+            seg_y.append(boundary)
+            segments.append((seg_x, seg_y, seg_ok))
+
+            seg_x = [t_cross, dates[pt]]
+            seg_y = [boundary, values[pt]]
+            seg_ok = in_range(values[pt])
+
+    segments.append((seg_x, seg_y, seg_ok))
+
+    result = []
+    for idx, (seg_x, seg_y, ok) in enumerate(segments):
+        result.append(go.Scatter(
+            x=seg_x,
+            y=seg_y,
+            name="Глюкоза (ммоль/л)",
+            mode="lines",
+            line=dict(color="blue" if ok else "red", width=2, shape="spline"),
+            yaxis="y1",
+            legendgroup="glucose",
+            showlegend=idx == 0,
+            hoverinfo="skip",
+        ))
+
+    # отдельный невидимый трейс для hover — только реальные точки, без дублей
+    hover_colors = ["blue" if in_range(v) else "red" for v in values]
+    result.append(go.Scatter(
+        x=dates,
+        y=values,
+        name="Глюкоза (ммоль/л)",
+        mode="markers",
+        marker=dict(color=hover_colors, size=12, symbol="square", opacity=0),
+        yaxis="y1",
+        legendgroup="glucose",
+        showlegend=False,
+        hovertemplate="<b>Глюкоза:</b> %{y:.1f} ммоль/л<extra></extra>",
+    ))
+
+    return result
+
+
+def _xaxis_ticks() -> dict:
+    if _days <= 3:
+        dtick = 2 * 3600_000        # каждые 2 часа
+    elif _days <= 7:
+        dtick = 6 * 3600_000        # каждые 6 часов
+    elif _days <= 14:
+        dtick = 12 * 3600_000       # каждые 12 часов
+    elif _days <= 31:
+        dtick = 24 * 3600_000       # каждые 24 часа
+    else:
+        dtick = 7 * 24 * 3600_000   # каждые 7 дней
+
+    tickformat = "%H:%M\n%d.%m" if _days <= 14 else "%d.%m"
+
+    return {"dtick": dtick, "tickformat": tickformat}
+
+
 def _to_sorted_df(records: list[dict]) -> pd.DataFrame:
     if not records:
         return pd.DataFrame()
@@ -50,7 +149,13 @@ def _to_sorted_df(records: list[dict]) -> pd.DataFrame:
 
 
 @st.cache_data(persist="disk")
-def load_data(file_path: str, _mtime: float) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_data(file_path: str, mtime: float) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:  # pylint: disable=unused-argument
+    """Загружает данные из HealthKit XML и кэширует результат на диск.
+
+    Кэш инвалидируется автоматически при изменении файла: mtime (время
+    последнего изменения) входит в ключ кэша. Параметры с префиксом ``_``
+    Streamlit из ключа исключает, поэтому имя без подчёркивания.
+    """
     if not os.path.exists(file_path):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
@@ -72,7 +177,8 @@ def load_data(file_path: str, _mtime: float) -> tuple[pd.DataFrame, pd.DataFrame
                 ]:
                     try:
                         date_val = pd.to_datetime(elem.get("startDate"))
-                        val = float(elem.get("value"))  # type: ignore[arg-type]
+                        # type: ignore[arg-type]
+                        val = float(elem.get("value"))
                     except (ValueError, TypeError):
                         skipped += 1
                         elem.clear()
@@ -95,7 +201,8 @@ def load_data(file_path: str, _mtime: float) -> tuple[pd.DataFrame, pd.DataFrame
                                     if meta.get("value") == "1":
                                         reason = "Базал"
 
-                        insulin.append({"date": date_val, "value": val, "reason": reason})
+                        insulin.append(
+                            {"date": date_val, "value": val, "reason": reason})
 
                 # Очищаем память, чтобы скрипт не съел всю ОЗУ
                 elem.clear()
@@ -113,7 +220,10 @@ def load_data(file_path: str, _mtime: float) -> tuple[pd.DataFrame, pd.DataFrame
 # === ИНТЕРФЕЙС ===
 st.title("📊 Дневник Диабета")
 
-df_g, df_c, df_i = load_data(FILE_PATH, os.path.getmtime(FILE_PATH) if os.path.exists(FILE_PATH) else 0.0)
+df_g, df_c, df_i = load_data(
+    FILE_PATH,
+    os.path.getmtime(FILE_PATH) if os.path.exists(FILE_PATH) else 0.0,
+)
 
 if df_g.empty and df_c.empty and df_i.empty:
     st.error(f"Файл {FILE_PATH} не найден или пуст.")
@@ -125,11 +235,12 @@ min_date_val = all_dates.min().date()
 max_date_val = all_dates.max().date()
 
 if "start_date" not in st.session_state:
-    st.session_state.start_date = max(min_date_val, max_date_val - timedelta(days=3))
+    st.session_state.start_date = max(
+        min_date_val, max_date_val - timedelta(days=3))
 if "end_date" not in st.session_state:
     st.session_state.end_date = max_date_val
 
-col1, col2 = st.columns([1, 2])
+col1, col2 = st.columns([1, 2], vertical_alignment="top")
 
 with col1:
     selected_dates = st.date_input(
@@ -161,8 +272,8 @@ with col2:
         st.session_state.start_date = max_date_val - timedelta(days=30)
         st.session_state.end_date = max_date_val
         st.rerun()
-    if btn5.button("Всё время", width="stretch"):
-        st.session_state.start_date = min_date_val
+    if btn5.button("2 месяца", width="stretch"):
+        st.session_state.start_date = max_date_val - timedelta(days=60)
         st.session_state.end_date = max_date_val
         st.rerun()
 
@@ -179,25 +290,18 @@ f_i = df_i[(df_i["date"] >= start_dt) & (df_i["date"] <= end_dt)]
 # --- ГРАФИК ---
 fig = go.Figure()
 
+max_g = f_g["value"].max() if not f_g.empty else 15
 max_i = f_i["value"].max() if not f_i.empty else 10
 max_c = f_c["value"].max() if not f_c.empty else 100
 
 # 1. Глюкоза
 if not f_g.empty:
-    fig.add_trace(
-        go.Scatter(
-            x=f_g["date"],
-            y=f_g["value"],
-            name="Глюкоза (ммоль/л)",
-            mode="lines",
-            line=dict(color=GLUCOSE_COLOR, width=2, shape="spline"),
-            yaxis="y1",
-            hovertemplate="<b>Глюкоза:</b> %{y:.1f} ммоль/л<extra></extra>",
-        )
-    )
+    for trace in _glucose_traces(f_g):
+        fig.add_trace(trace)
+
     fig.add_hrect(
-        y0=3.9,
-        y1=10.0,
+        y0=GLUCOSE_MIN,
+        y1=GLUCOSE_MAX,
         line_width=0,
         fillcolor="#32CD32",
         opacity=0.08,
@@ -221,6 +325,9 @@ if not f_i.empty:
                 width=1000 * 60 * 30,
                 yaxis="y2",
                 hovertemplate="<b>Болюс:</b> %{y} ЕД<extra></extra>",
+                text=i_bolus["value"].apply(_fmt_units),
+                textposition="outside",
+                textfont=dict(size=11, color="#00BFFF"),
             )
         )
 
@@ -234,6 +341,9 @@ if not f_i.empty:
                 width=1000 * 60 * 30,
                 yaxis="y2",
                 hovertemplate="<b>Базал:</b> %{y} ЕД<extra></extra>",
+                text=i_basal["value"].apply(_fmt_units),
+                textposition="outside",
+                textfont=dict(size=11, color="#808080"),
             )
         )
 
@@ -258,11 +368,18 @@ if not f_c.empty:
         )
     )
 
-midnights = pd.date_range(start=start_dt.floor("D"),
-                          end=end_dt.ceil("D"), freq="D")
-for midnight in midnights:
+days = pd.date_range(start=start_dt.floor("D"), end=end_dt.ceil("D"), freq="D")
+for i, day_start in enumerate(days[:-1]):
+    day_end = days[i + 1]
+    fig.add_vrect(
+        x0=day_start,
+        x1=day_end,
+        fillcolor="rgba(200, 200, 200, 0.15)" if i % 2 == 0 else "rgba(0, 0, 0, 0)",
+        line_width=0,
+        layer="below",
+    )
     fig.add_vline(
-        x=midnight,
+        x=day_start,
         line_width=1,
         line_dash="dash",
         line_color="rgba(128, 128, 128, 0.5)",
@@ -272,6 +389,8 @@ START_STR = st.session_state.start_date.strftime("%d.%m.%Y")
 END_STR = st.session_state.end_date.strftime("%d.%m.%Y")
 DATE_RANGE_STR = f"{START_STR} — {END_STR}"
 
+_days = (st.session_state.end_date - st.session_state.start_date).days
+
 fig.update_layout(
     title=dict(text=f"Данные за период: {DATE_RANGE_STR}", font=dict(size=18)),
     hovermode="x unified",
@@ -279,13 +398,20 @@ fig.update_layout(
     template="plotly_white",
     legend=dict(orientation="h", yanchor="bottom",
                 y=1.02, xanchor="right", x=1),
-    height=650,
+    height=800,
     margin=dict(l=20, r=20, t=60, b=20),
-    xaxis=dict(domain=[0, 0.95], range=[start_dt, end_dt], type="date"),
+    xaxis=dict(
+        domain=[0, 0.95],
+        range=[start_dt, end_dt],
+        type="date",
+        **_xaxis_ticks(),
+    ),
     yaxis=dict(
-        title=dict(text="Глюкоза", font=dict(color=GLUCOSE_COLOR)),
-        tickfont=dict(color=GLUCOSE_COLOR),
-        range=[0, 15],
+        title=dict(text="Глюкоза", font=dict(color="blue")),
+        tickfont=dict(color="blue"),
+        range=[-5, max_g * 1.1],
+        tickmode="array",
+        tickvals=list(range(0, int(max_g * 1.1) + 2, 2)),
     ),
     yaxis2=dict(
         title=dict(text="Инсулин", font=dict(color="#00BFFF")),
@@ -308,10 +434,8 @@ fig.update_layout(
 
 config = {
     "toImageButtonOptions": {
-        "format": "png",
         "filename": f"Дневник_Диабета_{st.session_state.start_date}_{st.session_state.end_date}",
-        "height": 800,
-        "width": 1400,
+        "format": "png",
         "scale": 2,
     },
     "displaylogo": False,

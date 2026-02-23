@@ -2,11 +2,9 @@ VENV = env
 
 ifeq ($(OS),Windows_NT)
     BIN    = $(VENV)/Scripts
-    EXE    = .exe
     RMVENV = rmdir /s /q $(VENV)
 else
     BIN    = $(VENV)/bin
-    EXE    =
     RMVENV = rm -rf $(VENV)
 endif
 
@@ -14,13 +12,13 @@ endif
 
 install:
 	python -m venv $(VENV)
-	$(BIN)/pip$(EXE) install -r requirements.txt
+	$(BIN)/pip install -r requirements.txt
 
 run:
-	$(BIN)/streamlit$(EXE) run healthkit_diabetes.py
+	$(BIN)/streamlit run healthkit_diabetes.py
 
 lint:
-	$(BIN)/pylint$(EXE) --ignore=$(VENV) .
+	$(BIN)/pylint --ignore=$(VENV) .
 
 clean:
 	$(RMVENV)
