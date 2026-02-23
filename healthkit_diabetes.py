@@ -125,7 +125,7 @@ min_date_val = all_dates.min().date()
 max_date_val = all_dates.max().date()
 
 if "start_date" not in st.session_state:
-    st.session_state.start_date = max_date_val - timedelta(days=3)
+    st.session_state.start_date = max(min_date_val, max_date_val - timedelta(days=3))
 if "end_date" not in st.session_state:
     st.session_state.end_date = max_date_val
 
