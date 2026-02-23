@@ -20,7 +20,7 @@ run:
 	$(BIN)/streamlit$(EXE) run healthkit_diabetes.py
 
 lint:
-	$(BIN)/pylint$(EXE) healthkit_diabetes.py
+	$(BIN)/pylint$(EXE) $(shell git ls-files '*.py')
 
 clean:
 	$(RMVENV)
