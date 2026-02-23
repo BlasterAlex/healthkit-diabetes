@@ -49,8 +49,8 @@ def _to_sorted_df(records: list[dict]) -> pd.DataFrame:
     return df
 
 
-@st.cache_data
-def load_data(file_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+@st.cache_data(persist="disk")
+def load_data(file_path: str, _mtime: float) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if not os.path.exists(file_path):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
@@ -113,7 +113,7 @@ def load_data(file_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
 # === ИНТЕРФЕЙС ===
 st.title("📊 Дневник Диабета")
 
-df_g, df_c, df_i = load_data(FILE_PATH)
+df_g, df_c, df_i = load_data(FILE_PATH, os.path.getmtime(FILE_PATH) if os.path.exists(FILE_PATH) else 0.0)
 
 if df_g.empty and df_c.empty and df_i.empty:
     st.error(f"Файл {FILE_PATH} не найден или пуст.")
